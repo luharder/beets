@@ -45,6 +45,9 @@ class MBSyncPlugin(BeetsPlugin):
             '-W', '--nowrite', action='store_false',
             default=None, dest='write',
             help="don't write updated metadata to files")
+        cmd.parser.add_option(
+            '-t', '--timid', action='store_true',
+            help="always confirm all actions")
         cmd.parser.add_format_option()
         cmd.func = self.func
         return [cmd]
@@ -56,11 +59,22 @@ class MBSyncPlugin(BeetsPlugin):
         pretend = opts.pretend
         write = ui.should_write(opts.write)
         query = ui.decargs(args)
+        timid = opts.timid
 
-        self.singletons(lib, query, move, pretend, write)
-        self.albums(lib, query, move, pretend, write)
+        if timid:
+            if write and move:
+                extra = ', move and write tags'
+            elif write:
+                extra = ' and write tags'
+            elif move:
+                extra = ' and move'
+            else:
+                extra = ''
 
-    def singletons(self, lib, query, move, pretend, write):
+        self.singletons(lib, query, move, pretend, write, timid, extra)
+        self.albums(lib, query, move, pretend, write, timid, extra)
+
+    def singletons(self, lib, query, move, pretend, write, timid, extra=''):
         """Retrieve and apply info from the autotagger for items matched by
         query.
         """
@@ -88,12 +102,28 @@ class MBSyncPlugin(BeetsPlugin):
             # Apply.
             with lib.transaction():
                 autotag.apply_item_metadata(item, track_info)
-                apply_item_changes(lib, item, move, pretend, write)
+                changed_item = ui.show_model_changes(item)
+                if timid:
+                    changed_item = ui.input_select_objects(
+                        'Really modify%s' % extra, [changed_item],
+                        lambda o: ui.show_model_changes(o)
+                    )
+                apply_item_changes(lib, changed_item, move, pretend, write)
 
-    def albums(self, lib, query, move, pretend, write):
+    def albums(self, lib, query, move, pretend, write, timid, extra=''):
         """Retrieve and apply info from the autotagger for albums matched by
         query and their items.
         """
+        if timid:
+            if write and move:
+                extra = ', move and write tags'
+            elif write:
+                extra = ' and write tags'
+            elif move:
+                extra = ' and move'
+            else:
+                extra = ''
+
         # Process matching albums.
         for a in lib.albums(query):
             album_formatted = format(a)
@@ -153,14 +183,23 @@ class MBSyncPlugin(BeetsPlugin):
             with lib.transaction():
                 autotag.apply_metadata(album_info, mapping)
                 changed = False
+                changed_items = []
                 # Find any changed item to apply MusicBrainz changes to album.
                 any_changed_item = items[0]
                 for item in items:
                     item_changed = ui.show_model_changes(item)
                     changed |= item_changed
-                    if item_changed:
-                        any_changed_item = item
-                        apply_item_changes(lib, item, move, pretend, write)
+                    changed_items.append(item)
+                
+                # Allow user to select which changes to apply in timid mode.
+                if timid:
+                    changed_items = ui.input_select_objects(
+                        'Really modify%s' % extra, changed_items,
+                        lambda o: ui.show_model_changes(o)
+                    )
+                for changed_item in changed_items:
+                    any_changed_item = changed_item
+                    apply_item_changes(lib, changed_item, move, pretend, write)
 
                 if not changed:
                     # No change to any item.
